@@ -5,10 +5,12 @@ An agent skill and toolkit to inspect, navigate, validate, and document MuleSoft
 ## Overview
 
 `mulesoft-api-explorer` provides automated extraction and inspection tools for MuleSoft development:
-- **HTTP Listeners & APIkit Endpoints**: Extracts endpoints, paths, HTTP methods, and associated flows.
+- **HTTP, FTP, SFTP & APIkit Listeners**: Extracts HTTP endpoints, FTP/SFTP listener directories and polling settings, and associated flows.
+- **Anypoint MQ Subscribers**: Finds subscriber destinations, flows, acknowledgement settings, subscription mode (prefetch or polling), and circuit-breaker configuration.
 - **Schedulers & Cron Triggers**: Identifies polling schedules, fixed frequencies, and cron expressions.
+- **Environment-aware file listener reports**: Resolves FTP/SFTP directory, filename pattern, and polling frequency from `src/main/resources/properties/` and groups the results by environment.
 - **Project Structure Validation**: Checks MuleSoft project health, Maven POM standards, secure properties, error handling, and `mule-artifact.json` descriptors.
-- **HTML Exploration Reports**: Generates a self-contained, dark-themed interactive HTML report of the full API surface.
+- **HTML Exploration Reports**: Generates a self-contained, light dashboard-style HTML report with a blue header, white cards, and readable tables.
 
 ---
 

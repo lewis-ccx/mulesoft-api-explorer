@@ -17,6 +17,9 @@ NAMESPACES = {
     'http': 'http://www.mulesoft.org/schema/mule/http',
     'apikit': 'http://www.mulesoft.org/schema/mule/apikit',
     'scheduler': 'http://www.mulesoft.org/schema/mule/scheduler',
+    'sftp': 'http://www.mulesoft.org/schema/mule/sftp',
+    'ftp': 'http://www.mulesoft.org/schema/mule/ftp',
+    'anypoint-mq': 'http://www.mulesoft.org/schema/mule/anypoint-mq',
     'vm': 'http://www.mulesoft.org/schema/mule/vm',
     'jms': 'http://www.mulesoft.org/schema/mule/jms',
 }
@@ -39,7 +42,18 @@ def parse_xml_file(filepath: Path) -> Optional[ET.Element]:
         return None
 
 
-def extract_http_listeners(root: ET.Element, filepath: Path) -> List[Dict]:
+def get_parent_flow(element: ET.Element, parents: Dict[ET.Element, ET.Element]) -> Optional[str]:
+    parent = element
+    while parent is not None:
+        tag = parent.tag.rsplit('}', 1)[-1]
+        if tag in ('flow', 'sub-flow'):
+            return parent.get('name')
+        parent = parents.get(parent)
+    return None
+
+
+def extract_http_listeners(root: ET.Element, filepath: Path,
+                           parents: Dict[ET.Element, ET.Element]) -> List[Dict]:
     endpoints = []
     
     # Find http:listener elements
@@ -49,14 +63,7 @@ def extract_http_listeners(root: ET.Element, filepath: Path) -> List[Dict]:
         method = listener.get('method') or listener.get('{http://www.mulesoft.org/schema/mule/http}method')
         allowed_methods = listener.get('allowedMethods') or listener.get('{http://www.mulesoft.org/schema/mule/http}allowedMethods')
         
-        # Find parent flow
-        flow_name = None
-        parent = listener
-        while parent is not None:
-            if parent.tag.endswith('flow') or parent.tag.endswith('sub-flow'):
-                flow_name = parent.get('name')
-                break
-            parent = parent.getparent() if hasattr(parent, 'getparent') else None
+        flow_name = get_parent_flow(listener, parents)
         
         endpoints.append({
             'type': 'http-listener',
@@ -70,20 +77,108 @@ def extract_http_listeners(root: ET.Element, filepath: Path) -> List[Dict]:
     return endpoints
 
 
-def extract_apikit_routers(root: ET.Element, filepath: Path) -> List[Dict]:
+def extract_sftp_listeners(root: ET.Element, filepath: Path,
+                           parents: Dict[ET.Element, ET.Element]) -> List[Dict]:
+    listeners = []
+
+    for listener in root.findall('.//sftp:listener', NAMESPACES):
+        fixed_frequency = listener.find('.//mule:fixed-frequency', NAMESPACES)
+        matcher = listener.find('.//sftp:matcher', NAMESPACES)
+        listeners.append({
+            'type': 'sftp-listener',
+            'config_ref': listener.get('config-ref'),
+            'directory': listener.get('directory'),
+            'recursive': listener.get('recursive'),
+            'filename_pattern': matcher.get('filenamePattern') if matcher is not None else None,
+            'frequency': fixed_frequency.get('frequency') if fixed_frequency is not None else None,
+            'start_delay': fixed_frequency.get('startDelay') if fixed_frequency is not None else None,
+            'time_unit': (fixed_frequency.get('timeUnit') or 'MILLISECONDS') if fixed_frequency is not None else None,
+            'flow': get_parent_flow(listener, parents),
+            'source_file': str(filepath),
+        })
+
+    return listeners
+
+
+def extract_ftp_listeners(root: ET.Element, filepath: Path,
+                          parents: Dict[ET.Element, ET.Element]) -> List[Dict]:
+    listeners = []
+
+    for listener in root.findall('.//ftp:listener', NAMESPACES):
+        fixed_frequency = listener.find('.//mule:fixed-frequency', NAMESPACES)
+        matcher = listener.find('.//ftp:matcher', NAMESPACES)
+        listeners.append({
+            'type': 'ftp-listener',
+            'config_ref': listener.get('config-ref'),
+            'directory': listener.get('directory'),
+            'recursive': listener.get('recursive'),
+            'filename_pattern': matcher.get('filenamePattern') if matcher is not None else None,
+            'frequency': fixed_frequency.get('frequency') if fixed_frequency is not None else None,
+            'start_delay': fixed_frequency.get('startDelay') if fixed_frequency is not None else None,
+            'time_unit': (fixed_frequency.get('timeUnit') or 'MILLISECONDS') if fixed_frequency is not None else None,
+            'flow': get_parent_flow(listener, parents),
+            'source_file': str(filepath),
+        })
+
+    return listeners
+
+
+def extract_anypoint_mq_subscribers(root: ET.Element, filepath: Path,
+                                   parents: Dict[ET.Element, ET.Element]) -> List[Dict]:
+    subscribers = []
+
+    for subscriber in root.findall('.//anypoint-mq:subscriber', NAMESPACES):
+        redelivery_policy = subscriber.find('.//mule:redelivery-policy', NAMESPACES)
+        prefetch = subscriber.find('.//anypoint-mq:prefetch', NAMESPACES)
+        subscriber_type = subscriber.find('.//anypoint-mq:subscriber-type', NAMESPACES)
+        subscriber_type_elements = list(subscriber_type.iter()) if subscriber_type is not None else []
+        uses_prefetch = any(
+            element.tag.rsplit('}', 1)[-1] == 'prefetch'
+            for element in subscriber_type_elements
+        )
+        uses_polling = any(
+            element.tag.rsplit('}', 1)[-1] == 'polling'
+            for element in subscriber_type_elements
+        )
+        if uses_prefetch and uses_polling:
+            subscription_mode = 'Prefetch and Polling'
+        elif uses_prefetch:
+            subscription_mode = 'Prefetch'
+        elif uses_polling:
+            subscription_mode = 'Polling'
+        else:
+            subscription_mode = 'Unknown'
+        circuit_breaker = subscriber.find('.//anypoint-mq:circuit-breaker', NAMESPACES)
+        subscribers.append({
+            'type': 'anypoint-mq-subscriber',
+            'config_ref': subscriber.get('config-ref'),
+            'destination': subscriber.get('destination'),
+            'acknowledgement_mode': subscriber.get('acknowledgementMode'),
+            'acknowledgement_timeout': subscriber.get('acknowledgementTimeout'),
+            'acknowledgement_timeout_unit': subscriber.get('acknowledgementTimeoutUnit'),
+            'subscription_mode': subscription_mode,
+            'max_redelivery_count': redelivery_policy.get('maxRedeliveryCount') if redelivery_policy is not None else None,
+            'prefetch_max_local_messages': prefetch.get('maxLocalMessages') if prefetch is not None else None,
+            'circuit_breaker_configured': circuit_breaker is not None,
+            'circuit_breaker_on_error_types': circuit_breaker.get('onErrorTypes') if circuit_breaker is not None else None,
+            'circuit_breaker_errors_threshold': circuit_breaker.get('errorsThreshold') if circuit_breaker is not None else None,
+            'circuit_breaker_trip_timeout': circuit_breaker.get('tripTimeout') if circuit_breaker is not None else None,
+            'circuit_breaker_trip_timeout_unit': circuit_breaker.get('tripTimeoutUnit') if circuit_breaker is not None else None,
+            'flow': get_parent_flow(subscriber, parents),
+            'source_file': str(filepath),
+        })
+
+    return subscribers
+
+
+def extract_apikit_routers(root: ET.Element, filepath: Path,
+                           parents: Dict[ET.Element, ET.Element]) -> List[Dict]:
     endpoints = []
     
     for router in root.findall('.//apikit:router', NAMESPACES):
         config_ref = router.get('config-ref') or router.get('{http://www.mulesoft.org/schema/mule/apikit}config-ref')
         
-        # Find parent flow
-        flow_name = None
-        parent = router
-        while parent is not None:
-            if parent.tag.endswith('flow') or parent.tag.endswith('sub-flow'):
-                flow_name = parent.get('name')
-                break
-            parent = parent.getparent() if hasattr(parent, 'getparent') else None
+        flow_name = get_parent_flow(router, parents)
         
         endpoints.append({
             'type': 'apikit-router',
@@ -96,20 +191,15 @@ def extract_apikit_routers(root: ET.Element, filepath: Path) -> List[Dict]:
     return endpoints
 
 
-def extract_schedulers(root: ET.Element, filepath: Path) -> List[Dict]:
+def extract_schedulers(root: ET.Element, filepath: Path,
+                       parents: Dict[ET.Element, ET.Element]) -> List[Dict]:
     schedulers = []
     
     # scheduler:trigger
     for trigger in root.findall('.//scheduler:trigger', NAMESPACES):
         config_ref = trigger.get('config-ref')
         
-        flow_name = None
-        parent = trigger
-        while parent is not None:
-            if parent.tag.endswith('flow') or parent.tag.endswith('sub-flow'):
-                flow_name = parent.get('name')
-                break
-            parent = parent.getparent() if hasattr(parent, 'getparent') else None
+        flow_name = get_parent_flow(trigger, parents)
         
         schedulers.append({
             'type': 'scheduler-trigger',
@@ -161,20 +251,15 @@ def extract_flows(root: ET.Element, filepath: Path) -> List[Dict]:
     return flows
 
 
-def extract_vm_queues(root: ET.Element, filepath: Path) -> List[Dict]:
+def extract_vm_queues(root: ET.Element, filepath: Path,
+                      parents: Dict[ET.Element, ET.Element]) -> List[Dict]:
     queues = []
     
     for listener in root.findall('.//vm:listener', NAMESPACES):
         config_ref = listener.get('config-ref')
         queue_name = listener.get('queueName')
         
-        flow_name = None
-        parent = listener
-        while parent is not None:
-            if parent.tag.endswith('flow') or parent.tag.endswith('sub-flow'):
-                flow_name = parent.get('name')
-                break
-            parent = parent.getparent() if hasattr(parent, 'getparent') else None
+        flow_name = get_parent_flow(listener, parents)
         
         queues.append({
             'type': 'vm-listener',
@@ -188,13 +273,7 @@ def extract_vm_queues(root: ET.Element, filepath: Path) -> List[Dict]:
         config_ref = publish.get('config-ref')
         queue_name = publish.get('queueName')
         
-        flow_name = None
-        parent = publish
-        while parent is not None:
-            if parent.tag.endswith('flow') or parent.tag.endswith('sub-flow'):
-                flow_name = parent.get('name')
-                break
-            parent = parent.getparent() if hasattr(parent, 'getparent') else None
+        flow_name = get_parent_flow(publish, parents)
         
         queues.append({
             'type': 'vm-publish',
@@ -222,6 +301,9 @@ def main():
     register_namespaces()
     
     all_endpoints = []
+    all_sftp_listeners = []
+    all_ftp_listeners = []
+    all_anypoint_mq_subscribers = []
     all_schedulers = []
     all_flows = []
     all_vm = []
@@ -231,14 +313,21 @@ def main():
         if root is None:
             continue
         
-        all_endpoints.extend(extract_http_listeners(root, xml_file))
-        all_endpoints.extend(extract_apikit_routers(root, xml_file))
-        all_schedulers.extend(extract_schedulers(root, xml_file))
+        parents = {child: parent for parent in root.iter() for child in parent}
+        all_endpoints.extend(extract_http_listeners(root, xml_file, parents))
+        all_sftp_listeners.extend(extract_sftp_listeners(root, xml_file, parents))
+        all_ftp_listeners.extend(extract_ftp_listeners(root, xml_file, parents))
+        all_anypoint_mq_subscribers.extend(extract_anypoint_mq_subscribers(root, xml_file, parents))
+        all_endpoints.extend(extract_apikit_routers(root, xml_file, parents))
+        all_schedulers.extend(extract_schedulers(root, xml_file, parents))
         all_flows.extend(extract_flows(root, xml_file))
-        all_vm.extend(extract_vm_queues(root, xml_file))
+        all_vm.extend(extract_vm_queues(root, xml_file, parents))
     
     result = {
         'endpoints': all_endpoints,
+        'sftp_listeners': all_sftp_listeners,
+        'ftp_listeners': all_ftp_listeners,
+        'anypoint_mq_subscribers': all_anypoint_mq_subscribers,
         'schedulers': all_schedulers,
         'flows': all_flows,
         'vm_queues': all_vm,
