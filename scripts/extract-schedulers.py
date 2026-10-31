@@ -34,23 +34,24 @@ def parse_xml_file(filepath: Path) -> Optional[ET.Element]:
         return None
 
 
-def get_parent_flow(element: ET.Element) -> Optional[str]:
+def get_parent_flow(element: ET.Element, parents: Dict[ET.Element, ET.Element]) -> Optional[str]:
     parent = element
     while parent is not None:
-        tag = parent.tag.split('}')[-1] if '}' in parent.tag else parent.tag
+        tag = parent.tag.rsplit('}', 1)[-1]
         if tag in ('flow', 'sub-flow'):
             return parent.get('name')
-        parent = getattr(parent, 'getparent', lambda: None)()
+        parent = parents.get(parent)
     return None
 
 
-def extract_schedulers(root: ET.Element, filepath: Path) -> List[Dict]:
+def extract_schedulers(root: ET.Element, filepath: Path,
+                       parents: Dict[ET.Element, ET.Element]) -> List[Dict]:
     schedulers = []
     
     # scheduler:trigger elements (inline triggers in flows)
     for trigger in root.findall('.//scheduler:trigger', NAMESPACES):
         config_ref = trigger.get('config-ref')
-        flow_name = get_parent_flow(trigger)
+        flow_name = get_parent_flow(trigger, parents)
         
         schedulers.append({
             'type': 'inline-trigger',
@@ -96,14 +97,15 @@ def extract_schedulers(root: ET.Element, filepath: Path) -> List[Dict]:
     return schedulers
 
 
-def extract_quartz_configs(root: ET.Element, filepath: Path) -> List[Dict]:
+def extract_quartz_configs(root: ET.Element, filepath: Path,
+                           parents: Dict[ET.Element, ET.Element]) -> List[Dict]:
     """Look for Quartz-specific configurations."""
     quartz = []
     
     # quartz:config or any element with cronExpression attribute
     for elem in root.iter():
         if 'cronExpression' in elem.attrib:
-            flow_name = get_parent_flow(elem)
+            flow_name = get_parent_flow(elem, parents)
             quartz.append({
                 'type': 'quartz-cron',
                 'cron_expression': elem.get('cronExpression'),
@@ -114,7 +116,7 @@ def extract_quartz_configs(root: ET.Element, filepath: Path) -> List[Dict]:
             })
         
         if 'frequency' in elem.attrib and 'period' in elem.attrib:
-            flow_name = get_parent_flow(elem)
+            flow_name = get_parent_flow(elem, parents)
             quartz.append({
                 'type': 'quartz-frequency',
                 'frequency': elem.get('frequency'),
@@ -150,8 +152,9 @@ def main():
         if root is None:
             continue
         
-        all_schedulers.extend(extract_schedulers(root, xml_file))
-        all_quartz.extend(extract_quartz_configs(root, xml_file))
+        parents = {child: parent for parent in root.iter() for child in parent}
+        all_schedulers.extend(extract_schedulers(root, xml_file, parents))
+        all_quartz.extend(extract_quartz_configs(root, xml_file, parents))
     
     result = {
         'schedulers': all_schedulers,

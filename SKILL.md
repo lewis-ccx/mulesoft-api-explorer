@@ -71,6 +71,24 @@ grep -r "apikit:router" src/main/mule --include="*.xml" -B 3 -A 3
 grep -r "<flow" src/main/mule --include="*.xml" -o | grep -E "get:|post:|put:|delete:|patch:" | sed 's/.*name="\([^"]*\)".*/\1/'
 ```
 
+### SFTP Listeners
+```bash
+# Find SFTP listeners and their polling configuration
+grep -r "sftp:listener" src/main/mule --include="*.xml" -B 2 -A 8
+```
+
+### FTP Listeners
+```bash
+# Find FTP listeners and their polling configuration
+grep -r "ftp:listener" src/main/mule --include="*.xml" -B 2 -A 8
+```
+
+### Anypoint MQ Subscribers
+```bash
+# Find Anypoint MQ subscriber sources
+grep -r "anypoint-mq:subscriber" src/main/mule --include="*.xml" -B 2 -A 8
+```
+
 ### Schedulers (Polling / Cron)
 ```bash
 # Find all schedulers
@@ -199,14 +217,13 @@ python scripts/generate-report.py <project-root> /path/to/output.html
 
 The report includes:
 - Project metadata (Mule version, packaging, Java version)
-- Validation results (errors, warnings, info)
-- HTTP listeners and APIkit endpoints
-- All flows and sub-flows
+- Counts of explicitly method-bound HTTP endpoints and APIkit-generated endpoints
+- SFTP and FTP listeners (directory, file pattern, polling frequency, and flow resolved and grouped by environment from `src/main/resources/properties/`)
+- Anypoint MQ subscribers (destination, flow, acknowledgement, subscription mode—prefetch or polling—and circuit-breaker settings grouped by environment)
 - Schedulers and VM queues
-- Config file inventory
 - Property file inventory
 
-Uses the dark-themed, self-contained HTML (no external dependencies). Safe to share or open in any browser.
+Uses a light dashboard-style, self-contained HTML with no external dependencies. Review project-specific content before sharing.
 
 ## Linked References
 
