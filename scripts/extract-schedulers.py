@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 NAMESPACES = {
     'mule': 'http://www.mulesoft.org/schema/mule/core',
     'scheduler': 'http://www.mulesoft.org/schema/mule/scheduler',
+    'doc': 'http://www.mulesoft.org/schema/mule/documentation',
 }
 
 
@@ -24,7 +25,8 @@ def register_namespaces():
 
 def parse_xml_file(filepath: Path) -> Optional[ET.Element]:
     try:
-        tree = ET.parse(filepath)
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=False))
+        tree = ET.parse(filepath, parser=parser)
         return tree.getroot()
     except ET.ParseError as e:
         print(f"Warning: Failed to parse {filepath}: {e}", file=sys.stderr)
@@ -47,6 +49,27 @@ def get_parent_flow(element: ET.Element, parents: Dict[ET.Element, ET.Element]) 
 def extract_schedulers(root: ET.Element, filepath: Path,
                        parents: Dict[ET.Element, ET.Element]) -> List[Dict]:
     schedulers = []
+
+    for scheduler_element in root.findall('.//mule:scheduler', NAMESPACES):
+        scheduling_strategy = scheduler_element.find('mule:scheduling-strategy', NAMESPACES)
+        cron = scheduling_strategy.find('mule:cron', NAMESPACES) if scheduling_strategy is not None else None
+        fixed_frequency = (
+            scheduling_strategy.find('mule:fixed-frequency', NAMESPACES)
+            if scheduling_strategy is not None else None
+        )
+        schedulers.append({
+            'type': 'flow-scheduler',
+            'name': scheduler_element.get('doc:name')
+                    or scheduler_element.get('{http://www.mulesoft.org/schema/mule/documentation}name')
+                    or scheduler_element.get('name'),
+            'cron_expression': cron.get('expression') if cron is not None else None,
+            'frequency': fixed_frequency.get('frequency') if fixed_frequency is not None else None,
+            'timezone': (cron.get('timeZone') or cron.get('timezone')) if cron is not None else None,
+            'start_delay': fixed_frequency.get('startDelay') if fixed_frequency is not None else None,
+            'flow': get_parent_flow(scheduler_element, parents),
+            'source_file': str(filepath),
+            'line': None,
+        })
     
     # scheduler:trigger elements (inline triggers in flows)
     for trigger in root.findall('.//scheduler:trigger', NAMESPACES):

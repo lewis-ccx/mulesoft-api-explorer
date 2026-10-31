@@ -1,9 +1,10 @@
 ---
 name: mulesoft-api-explorer
 version: 1.0.0
+argument-hint: '[project path] [analysis request]'
 description: >-
   Explore MuleSoft APIs — endpoints, schedules, interfaces, flows, dependencies, and deployment artifacts.
-  Use when inspecting, navigating, exploring, or understanding a MuleSoft (Mule 4.x) API project.
+  Use when inspecting, navigating, exploring, or understanding a MuleSoft (Mule 4.x) API project with a user-provided local project directory.
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -31,13 +32,28 @@ Use when you need to inspect, navigate, or understand a MuleSoft (Mule 4.x) API 
 - Inspect dependencies, properties, and deployment artifacts
 - Debug or document an existing Mule application
 
+## How to Invoke
+
+When invoking this skill, the user must provide the local directory path of the MuleSoft project. Do not guess a project from the workspace, conversation history, or a previous request. If the user invokes the skill without a local directory, ask them to provide one before analyzing or generating a report.
+
+In Copilot Chat, type `/mulesoft-api-explorer`, then provide the local project folder and what you want analyzed. For example:
+
+```text
+/mulesoft-api-explorer Analyze C:\path\to\mule-project
+```
+
+You can also invoke the skill in plain language, such as: `Use the mulesoft-api-explorer skill to analyze C:\path\to\mule-project`. The path must identify a local project directory. When analyzing a project, generate the HTML report by default and include its output path in the response.
+
 ## Prerequisites
 
-- Maven 3.6+ installed
 - Java 11+ (for Mule 4.x)
 - Project uses standard Maven structure (`pom.xml`, `src/main/mule/`)
 - Optional: `anypoint-cli` for CloudHub operations
 - Optional: `xmlstarlet`, `xmllint` for XML validation
+
+## Maven Command Restriction
+
+Never run Maven commands when using this skill. Do not run `mvn`, `mvnw`, or Maven goals for builds, packaging, testing, dependency resolution, effective-POM generation, or any other purpose. Analyze the project by reading its files and using the skill's Python extraction and report scripts. Do not perform Maven build verification.
 
 ## Quick Reference — Key Commands
 
@@ -49,10 +65,7 @@ tree -L 3 -I target
 # List all Mule config files (recursive)
 find src/main/mule -name '*.xml'
 
-# Show effective POM (resolves parent POM)
-mvn help:effective-pom -Doutput=target/effective-pom.xml
-
-# Check parent POM for Mule version
+# Inspect parent POM and Mule version directly from pom.xml
 cat pom.xml | grep -A5 "<parent>"
 ```
 
@@ -146,14 +159,8 @@ grep -r "!\\[" src/main/resources --include="*.yaml" -o | head -20
 
 ### Dependencies & Build
 ```bash
-# Dependency tree (Mule modules)
-mvn dependency:tree | grep -E "mule|api-gateway|http|json|db|vm|jms|salesforce"
-
-# Clean build
-mvn clean package -DskipTests
-
-# Run tests
-mvn test
+# Inspect dependency declarations directly in pom.xml
+grep -A5 "<dependencies>" pom.xml
 
 # Verify JAR contents
 jar tf target/*.jar | grep -E "\.xml$|\.yaml$|mule-artifact"
@@ -179,9 +186,11 @@ xmlstarlet sel -N mvn=http://maven.apache.org/POM/4.0.0 -t -v "//mvn:mule.versio
 7. **Find API contracts** — check `src/main/api/` for RAML/OAS
 8. **List all flows** — get flow/sub-flow names
 9. **Check properties** — list placeholders and env files
-10. **Build and verify** — `mvn clean package -DskipTests`, check JAR
+10. **Generate the HTML project report** — run `python <skill-directory>/scripts/generate-report.py <project-root>` and verify the report was written to `<project-root>/target/mulesoft-report.html`
+11. **Inspect deployment artifacts** — if a built JAR already exists, inspect it without invoking Maven
 
-Each step produces output you can save or document.
+Generate the report by default whenever using this skill to analyze a MuleSoft project, even if the user did not explicitly request a report. Mention its output path in the response. Skip report generation only if the user explicitly asks not to create one. If report generation fails, report the error rather than implying the report exists.
+Never invoke Maven as part of this workflow; inspect project files and any pre-existing artifacts only.
 
 ## Pitfalls
 
@@ -190,6 +199,9 @@ Each step produces output you can save or document.
 - **Property encryption** — secure properties (e.g., `![value]`) need `secure-property` tool to decrypt
 - **APIkit router** — if present, endpoints derive from RAML/OAS, not XML; always check `src/main/api/`
 - **Multiple config files** — flows split across files; `grep -r` catches all
+- **Commented-out components** — analyze parsed XML elements, not text matches; components inside XML comments are not active configuration and must be excluded from report counts and tables
+- **Anypoint MQ report counts** — count only active `anypoint-mq:subscriber` elements; `anypoint-mq:publish` operations are not subscribers and must not affect subscriber counts
+- **Mule schedulers** — scan active Mule core `<scheduler>` sources and extract nested `<cron>` or `<fixed-frequency>` settings with the containing flow; resolve cron placeholders from each SIT/UAT/PROD YAML file and group scheduler tables by environment; do not display a frequency column or treat unrelated `scheduling-strategy` polling configurations as scheduler sources
 - **CloudHub vs on-prem** — `mule-artifact.json` `requiredProduct` may be `MULE` or `API_GATEWAY`
 
 ## Verification
@@ -200,27 +212,31 @@ Each step produces output you can save or document.
 - [ ] API contract (RAML/OAS) located and version noted
 - [ ] All flows and sub-flows enumerated
 - [ ] Property placeholders documented per environment
-- [ ] Build succeeds (`mvn clean package`)
-- [ ] JAR contains expected configs and `mule-artifact.json`
+- [ ] HTML project report generated at `target/mulesoft-report.html` and its path provided
+- [ ] Existing JAR, if available, contains expected configs and `mule-artifact.json` (do not build one)
 
 ### HTML Report Generation
 
 Generate a self-contained HTML report of the full project analysis:
 
 ```bash
-# Generate report (defaults to target/mulesoft-report.html)
-python scripts/generate-report.py <project-root>
+# Generate report (default output: <project-root>/target/mulesoft-report.html)
+python <skill-directory>/scripts/generate-report.py <project-root>
 
 # Custom output path
-python scripts/generate-report.py <project-root> /path/to/output.html
+python <skill-directory>/scripts/generate-report.py <project-root> <output.html>
 ```
 
+This report generation is a standard part of project analysis. After running the script, verify that the output file exists and include its path in the response. Do not overwrite an existing report at a custom path unless requested; use the default path or ask the user which output path to use.
+
 The report includes:
+- Clickable summary cards that jump to the HTTP Endpoints, APIkit-Generated Flows, SFTP Listeners, FTP Listeners, Anypoint MQ Subscribers, and Schedulers sections
+- A floating circular bottom-right button that appears only after scrolling and returns to the top of the report
 - Project metadata (Mule version, packaging, Java version)
-- Counts of explicitly method-bound HTTP endpoints and APIkit-generated endpoints
+- HTTP listeners with configured paths (including listeners that accept any method), listed with method, path, flow, config, and source; APIkit-generated flows linked to an `apikit:router` by source file and `config-ref`
 - SFTP and FTP listeners (directory, file pattern, polling frequency, and flow resolved and grouped by environment from `src/main/resources/properties/`)
-- Anypoint MQ subscribers (destination, flow, acknowledgement, subscription mode—prefetch or polling—and circuit-breaker settings grouped by environment)
-- Schedulers and VM queues
+- Active Anypoint MQ subscribers only (destination, flow, acknowledgement, subscription mode—prefetch or polling—and circuit-breaker settings grouped by environment); publish operations are excluded
+- Mule core flow schedulers grouped by SIT/UAT/PROD with environment-resolved cron, flow, timezone, and source (no frequency column), plus VM queues
 - Property file inventory
 
 Uses a light dashboard-style, self-contained HTML with no external dependencies. Review project-specific content before sharing.

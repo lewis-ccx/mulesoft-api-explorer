@@ -253,7 +253,8 @@ def render_transfer_listener_section(title: str, listeners: list, environments: 
         )
         rows_by_environment.append(f'<h3>{escape(environment)}</h3><div class="card">{table}</div>')
 
-    return f'<!-- {title} Listeners -->\n<h2>&#128230; {title} Listeners</h2>\n' + '\n'.join(rows_by_environment)
+    section_id = f"{title.lower()}-listeners"
+    return f'<!-- {title} Listeners -->\n<h2 id="{section_id}">&#128230; {title} Listeners</h2>\n' + '\n'.join(rows_by_environment)
 
 
 def render_anypoint_mq_subscriber_section(subscribers: list, environments: list) -> str:
@@ -330,7 +331,49 @@ def render_anypoint_mq_subscriber_section(subscribers: list, environments: list)
         )
         environment_sections.append(f'<h3>{escape(environment)}</h3><div class="card">{table}</div>')
 
-    return '<!-- Anypoint MQ Subscribers -->\n<h2>&#128225; Anypoint MQ Subscribers</h2>\n' + '\n'.join(environment_sections)
+    return '<!-- Anypoint MQ Subscribers -->\n<h2 id="anypoint-mq-subscribers">&#128225; Anypoint MQ Subscribers</h2>\n' + '\n'.join(environment_sections)
+
+
+def render_scheduler_section(schedulers: list, environments: list) -> str:
+    """Render scheduler details with cron placeholders resolved per deployment environment."""
+    properties_by_environment = {
+        environment.lower(): properties
+        for environment, properties in environments
+    }
+    sections = []
+    for environment in ('sit', 'uat', 'prod'):
+        properties = properties_by_environment.get(environment)
+        if properties is None:
+            continue
+
+        rows = []
+        for scheduler in schedulers:
+            values = (
+                scheduler.get('name', ''),
+                scheduler.get('flow', ''),
+                resolve_property_placeholders(scheduler.get('cron_expression'), properties),
+                resolve_property_placeholders(scheduler.get('timezone'), properties),
+                scheduler.get('source_file', ''),
+            )
+            rows.append(
+                '<tr>'
+                f'<td><code>{escape(values[0])}</code></td>'
+                f'<td><code>{escape(values[1])}</code></td>'
+                f'<td><code>{escape(values[2])}</code></td>'
+                f'<td><code>{escape(values[3])}</code></td>'
+                f'<td><code>{escape(values[4])}</code></td>'
+                '</tr>'
+            )
+
+        table = (
+            '<table><thead><tr><th>Name</th><th>Flow</th><th>Cron</th>'
+            '<th>Timezone</th><th>Source</th></tr></thead><tbody>'
+            + ''.join(rows) + '</tbody></table>'
+            if rows else '<p>No schedulers found.</p>'
+        )
+        sections.append(f'<h3>{escape(environment.upper())}</h3><div class="card">{table}</div>')
+
+    return '<!-- Schedulers -->\n<h2 id="schedulers">&#9200; Schedulers</h2>\n' + '\n'.join(sections)
 
 
 def render_html(project_info: dict, endpoints: dict, environments: list,
@@ -349,15 +392,25 @@ def render_html(project_info: dict, endpoints: dict, environments: list,
     flows = endpoints.get('flows', [])
     schedulers = endpoints.get('schedulers', [])
     vm_queues = endpoints.get('vm_queues', [])
+    apikit_router_keys = {
+        (
+            os.path.normcase(str(Path(endpoint.get('source_file', '')).resolve())),
+            endpoint.get('config_ref'),
+        )
+        for endpoint in endpoints.get('endpoints', [])
+        if endpoint.get('type') == 'apikit-router' and endpoint.get('config_ref')
+    }
 
     apikit_flows = [
         flow for flow in flows
         if flow.get('name', '').startswith(('get:', 'post:', 'put:', 'delete:', 'patch:'))
+        and any(
+            os.path.normcase(str(Path(flow.get('source_file', '')).resolve())) == source_file
+            and flow.get('name', '').endswith(f":{config_ref}")
+            for source_file, config_ref in apikit_router_keys
+        )
     ]
-    http_endpoint_count = sum(
-        bool(endpoint.get('path')) and endpoint.get('method') not in (None, '', '*')
-        for endpoint in http_listener_records
-    )
+    http_endpoint_count = sum(bool(endpoint.get('path')) for endpoint in http_listener_records)
     # Build endpoint table
     def endpoint_rows(items):
         rows = []
@@ -369,6 +422,16 @@ def render_html(project_info: dict, endpoints: dict, environments: list,
                 f"<td><code>{e.get('config_ref', '')}</code></td></tr>"
             )
         return '\n'.join(rows)
+
+    http_listener_rows = '\n'.join(
+        f"<tr><td><code>{endpoint.get('method', '*')}</code></td>"
+        f"<td><code>{endpoint.get('path', '')}</code></td>"
+        f"<td><code>{endpoint.get('flow', '')}</code></td>"
+        f"<td><code>{endpoint.get('config_ref', '')}</code></td>"
+        f"<td><code>{endpoint.get('source_file', '')}</code></td></tr>"
+        for endpoint in http_listener_records
+        if endpoint.get('path')
+    )
 
     # Flow table
     flow_rows = '\n'.join(
@@ -414,6 +477,7 @@ body {{
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: var(--bg); color: var(--fg); line-height: 1.55; padding: 16px;
 }}
+html {{ scroll-behavior: smooth; }}
 .container {{ max-width: 1600px; margin: 0 auto; }}
 .hero {{
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
@@ -425,8 +489,27 @@ h1 {{ font-size: 1.35rem; line-height: 1.3; font-weight: 650; }}
 h2 {{
   font-size: 1.08rem; margin: 1.35rem 0 0.7rem; color: #173f70;
   border-bottom: 1px solid var(--border); padding: 0 0 0.45rem 0.1rem;
+  scroll-margin-top: 1rem;
 }}
 h3 {{ font-size: 0.88rem; margin: 1rem 0 0.35rem; color: #315d8a; text-transform: uppercase; letter-spacing: 0.035em; }}
+.stat-link {{ display: block; color: inherit; text-decoration: none; border-radius: 5px; }}
+.stat-link:focus-visible {{ outline: 3px solid var(--accent); outline-offset: 3px; }}
+.stat-link:hover .stat {{ border-color: var(--accent); }}
+.back-to-top {{
+  position: fixed; right: 24px; bottom: 24px; z-index: 10;
+  display: grid; width: 48px; height: 48px; place-items: center;
+  border-radius: 50%; background: var(--accent); color: #fff;
+  box-shadow: 0 2px 8px rgba(18, 54, 91, 0.28);
+  font-size: 1.5rem; line-height: 1; text-decoration: none;
+  visibility: hidden; opacity: 0; pointer-events: none;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s;
+}}
+.back-to-top.is-visible {{
+  visibility: visible; opacity: 1; pointer-events: auto; transform: translateY(0);
+}}
+.back-to-top:hover {{ background: #0867ad; }}
+.back-to-top:focus-visible {{ outline: 3px solid var(--fg); outline-offset: 3px; }}
 .card {{
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 5px; padding: 14px; margin: 0.55rem 0;
@@ -456,9 +539,9 @@ code {{
 }}
 .stat .num {{ font-size: 1.75rem; line-height: 1.15; font-weight: 700; color: #173f70; }}
 .stat .label {{ color: #607995; font-size: 0.68rem; font-weight: 650; text-transform: uppercase; letter-spacing: 0.035em; margin-top: 0.25rem; }}
-.stat:nth-child(2) {{ border-left-color: #7d4bb3; }}
-.stat:nth-child(3) {{ border-left-color: #32a852; }}
-.stat:nth-child(4) {{ border-left-color: #e2a020; }}
+.stat-link:nth-child(2) .stat {{ border-left-color: #7d4bb3; }}
+.stat-link:nth-child(3) .stat {{ border-left-color: #32a852; }}
+.stat-link:nth-child(4) .stat {{ border-left-color: #e2a020; }}
 .meta-table td:first-child {{ color: #607995; width: 180px; font-weight: 600; }}
 footer {{ margin-top: 1.5rem; padding: 0.8rem 0; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.75rem; }}
 @media (max-width: 640px) {{
@@ -466,11 +549,16 @@ footer {{ margin-top: 1.5rem; padding: 0.8rem 0; border-top: 1px solid var(--bor
   .hero {{ align-items: flex-start; flex-direction: column; padding: 14px 16px; }}
   .stats {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
   .card {{ overflow-x: auto; }}
+  .back-to-top {{ right: 16px; bottom: 16px; }}
+}}
+@media (prefers-reduced-motion: reduce) {{
+  html {{ scroll-behavior: auto; }}
+  .back-to-top {{ transition: none; }}
 }}
 </style>
 </head>
 <body>
-<div class="container">
+<div class="container" id="top">
 
 <header class="hero">
   <h1>&#128736; MuleSoft API Project Report</h1>
@@ -479,12 +567,12 @@ footer {{ margin-top: 1.5rem; padding: 0.8rem 0; border-top: 1px solid var(--bor
 
 <!-- Summary Stats -->
 <div class="stats">
-  <div class="stat total"><div class="num">{http_endpoint_count}</div><div class="label">HTTP Endpoints</div></div>
-  <div class="stat total"><div class="num">{len(apikit_flows)}</div><div class="label">APIkit-Generated Endpoints</div></div>
-  <div class="stat total"><div class="num">{len(sftp_listeners)}</div><div class="label">SFTP Listeners</div></div>
-  <div class="stat total"><div class="num">{len(ftp_listeners)}</div><div class="label">FTP Listeners</div></div>
-  <div class="stat total"><div class="num">{len(anypoint_mq_subscribers)}</div><div class="label">Anypoint MQ Subscribers</div></div>
-  <div class="stat total"><div class="num">{len(schedulers)}</div><div class="label">Schedulers</div></div>
+    <a class="stat-link" href="#http-endpoints"><div class="stat total"><div class="num">{http_endpoint_count}</div><div class="label">HTTP Endpoints</div></div></a>
+    <a class="stat-link" href="#apikit-generated-flows"><div class="stat total"><div class="num">{len(apikit_flows)}</div><div class="label">APIkit-Generated Flows</div></div></a>
+    <a class="stat-link" href="#sftp-listeners"><div class="stat total"><div class="num">{len(sftp_listeners)}</div><div class="label">SFTP Listeners</div></div></a>
+    <a class="stat-link" href="#ftp-listeners"><div class="stat total"><div class="num">{len(ftp_listeners)}</div><div class="label">FTP Listeners</div></div></a>
+    <a class="stat-link" href="#anypoint-mq-subscribers"><div class="stat total"><div class="num">{len(anypoint_mq_subscribers)}</div><div class="label">Anypoint MQ Subscribers</div></div></a>
+    <a class="stat-link" href="#schedulers"><div class="stat total"><div class="num">{len(schedulers)}</div><div class="label">Schedulers</div></div></a>
 </div>
 
 <!-- Project Info -->
@@ -504,21 +592,19 @@ footer {{ margin-top: 1.5rem; padding: 0.8rem 0; border-top: 1px solid var(--bor
 
 {render_transfer_listener_section('FTP', ftp_listeners, environments)}
 
+<h2 id="http-endpoints">HTTP Endpoints ({http_endpoint_count})</h2>
+<div class="card">
+{('<table><thead><tr><th>Method</th><th>Path</th><th>Flow</th><th>Config</th><th>Source</th></tr></thead><tbody>' + http_listener_rows + '</tbody></table>') if http_endpoint_count else '<p>No HTTP listeners found.</p>'}
+</div>
+
 {render_anypoint_mq_subscriber_section(anypoint_mq_subscribers, environments)}
 
-{f'''
-<h3>APIkit-Generated Flows ({len(apikit_flows)})</h3>
+<h2 id="apikit-generated-flows">APIkit-Generated Flows ({len(apikit_flows)})</h2>
 <div class="card">
-<table><thead><tr><th>Flow Name</th><th>Source</th></tr></thead>
-<tbody>{apikit_flow_rows}</tbody></table>
+{('<table><thead><tr><th>Flow Name</th><th>Source</th></tr></thead><tbody>' + apikit_flow_rows + '</tbody></table>') if apikit_flows else '<p>No APIkit-generated flows found.</p>'}
 </div>
-''' if apikit_flows else ''}
 
-<!-- Schedulers -->
-<h2>&#9200; Schedulers</h2>
-<div class="card">
-{('<table><thead><tr><th>Name</th><th>Cron</th><th>Frequency</th></tr></thead><tbody>' + ''.join(f"<tr><td><code>{s.get('name','')}</code></td><td><code>{s.get('cron_expression','')}</code></td><td><code>{s.get('frequency','')}</code></td></tr>" for s in schedulers) + '</tbody></table>') if schedulers else '<p>No schedulers found.</p>'}
-</div>
+{render_scheduler_section(schedulers, environments)}
 
 <!-- VM Queues -->
 {f'''
@@ -539,6 +625,15 @@ footer {{ margin-top: 1.5rem; padding: 0.8rem 0; border-top: 1px solid var(--bor
 Generated by <code>mulesoft-api-explorer</code> skill &mdash; {now}
 </footer>
 </div>
+<a class="back-to-top" href="#top" aria-label="Back to top" title="Back to top">&#8593;</a>
+<script>
+const backToTop = document.querySelector('.back-to-top');
+const updateBackToTopVisibility = () => {{
+  backToTop.classList.toggle('is-visible', window.scrollY > 0);
+}};
+window.addEventListener('scroll', updateBackToTopVisibility, {{ passive: true }});
+updateBackToTopVisibility();
+</script>
 </body>
 </html>"""
     return html
